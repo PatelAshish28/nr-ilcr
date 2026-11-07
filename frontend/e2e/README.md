@@ -12,6 +12,15 @@ page objects. Scenarios are re-grounded from each use case's **Gherkin**: that G
 each screen must do (authored from the legacy app / the spec); here the routes, fields, and input
 values are pinned to the *new* app and the *seeded* DB.
 
+**Summary documents** (for the product owner, BA/QA and the team taking over the app):
+
+- [`e2e-test-results.md`](e2e-test-results.md): the latest full run, results by use case, known failing
+  tests and their tickets, and how much of the application the suite covers.
+- [`accessibility-findings.md`](accessibility-findings.md): every WCAG 2.1 AA finding, open or resolved,
+  with its ticket and evidence.
+- [`coverage-guide.md`](coverage-guide.md) and [`defects-guide.md`](defects-guide.md): how to read the
+  per-use-case `coverage.md` and `defects.md` files those summaries link to.
+
 ## Layout — organized by domain, then use case
 
 Every artifact lives under its **domain** (a short subject code, e.g. `<DOMAIN>`) and then its **use
@@ -118,8 +127,8 @@ mock auth). Ports, DSN and container name are defaults; override them via `.env`
    [`backend/README.md`](../../backend/README.md)). The backend has no reference-data cache, so seed patches applied
    while it runs are picked up immediately. Start the DB *before* the backend — the Spring context fails to
    initialize if the Oracle listener isn't up yet, and then every `/api` route fails.
-3. **Frontend** on `:3000`: `npm run dev` in `frontend/`. The repo default `public/amplify-config.js` has
-   `mockUser: true`, so on localhost the app signs in a mock user with no Cognito flow. The suite picks the mock
+3. **Frontend** on `:3000`: `npm run dev` in `frontend/`. The repo default `public/config.js` has
+   `mockUser: true`, so on localhost the app signs in a mock user with no CSS flow. The suite picks the mock
    administrator or submitter per scenario (`pages/common/mockUser.ts`); `preflight/mock-user.setup.ts` checks
    that those users still match `src/context/auth/mockUsers.ts`.
 
@@ -158,8 +167,8 @@ design** whenever a `@discovered-divergence` / `@discovered-bug` red is tracking
 working as intended, not a broken build. `test:gate` excludes those known reds and exits 0 when nothing new
 has broken, so it is the one that is safe to copy-paste and safe to automate.
 
-Which reds exist at any moment is recorded in each UC's `defects.md` (and, when the fix is someone else's,
-in `deferred-work.md`) — deliberately not listed here, so this file cannot go stale.
+Which reds exist at any moment is recorded in each UC's `defects.md`, with the GitHub issue that tracks
+each fix — deliberately not listed here, so this file cannot go stale.
 
 **Counting tests: measure, never increment.** Each UC's `coverage.md` carries exactly one *Suite state*
 block with its own numbers and the date they were measured; nothing else restates them. There is no
@@ -245,24 +254,39 @@ At scale you can also filter at *generation* time so only matching scenarios com
 
 ## CI — the whole suite runs on every PR
 
-Since PR #327 the **complete** suite runs in CI: the `e2e-tests` job in `.github/workflows/reusable-tests.yml`
-executes all three projects — `smoke`, the `setup` preflight, and the data-backed `chromium` scenarios — in
-one job, gated on **`npm run test:gate`** so the known `@discovered-*` reds are excluded (see *Install and run*
-for why that and not `npm test`). It is no longer a manual gate.
+Since PR #327 the **complete** suite runs in CI: `.github/workflows/reusable-e2e.yml` (called by the `e2e-tests`
+job in `reusable-tests.yml`) executes all three projects — `smoke`, the `setup` preflight, and the data-backed
+`chromium` scenarios — gated on **`npm run test:gate`** so the known `@discovered-*` reds are excluded (see
+*Install and run* for why that and not `npm test`). It is no longer a manual gate.
+
+It runs as **reset → shards → report**: one job resets the database and runs the `setup` preflight
+once, while the data is still at rest; a matrix of runners each run `--shard=i/n` of `smoke` and
+`chromium` against it (`--no-deps`, since `setup` already ran); and a last job merges their blob reports
+into the single `playwright-report` artifact. A failing shard also uploads its backend log as
+`e2e-backend-log-<n>`.
 
 How it gets a stack and a database:
 
 - **The stack runs on the runner**, not against the deployed PR environment: mock auth only engages on
-  localhost (`isMockAuth()` double-gates on `isLocalHost()`), so the job starts the frontend on `:3000` and
-  the backend on `:8080` itself.
+  localhost (`isMockAuth()` double-gates on `isLocalHost()`), so each shard starts the frontend on `:3000`
+  and the backend on `:8080` itself.
 - **The database is the shared Oracle in the OpenShift *tools* namespace** (`database/openshift.deploy.yml`,
   deployed by `reusable-deploy`'s `deploy-database` job), reached with `oc port-forward` because a route
-  cannot carry SQL*Net. `concurrency: group: e2e-tools-oracle` queues runs so two never share it.
+  cannot carry SQL*Net. It is a throwaway Oracle Free container built from `database/`, not one of the NRS
+  dev/test/prod databases, which sit outside OpenShift; the action and reset script refuse any other target.
+  All shards share it, which is safe because the suite is already `fullyParallel`
+  against one database (`@mode:serial` features stay whole inside one shard). `concurrency: group:
+  e2e-tools-oracle` on the calling job spans reset, shards and report, so two runs never share it.
 - **Data comes from Flyway, not from the extract.** `mvn -P e2e-db flyway:clean flyway:migrate` rebuilds the
   schema at the start of every run from the backend's test-scope chain (`backend/src/test/resources/db/`) plus
-  the e2e-only anchor seed (`db-e2e/R__80_e2e_anchor_seed.sql`). That reset is why the job needs no cleanup —
+  the e2e-only anchor seed (`db-e2e/R__80_e2e_anchor_seed.sql`). That reset is why a run needs no cleanup —
   and it **wipes the tools database each run**, which is fine by design (its template declares the data
   ephemeral); nothing else may treat that DB as durable.
+- **Most runs skip Flyway.** Over the port-forward Flyway pays a round trip per statement (~4.5 min for the
+  whole chain), so `.github/scripts/e2e-db-reset.sh` keeps the freshly seeded PDB as a snapshot and later runs
+  clone it back over `ILCR` inside the pod instead. The snapshot is keyed on the migration files, the Spring
+  Boot parent (Flyway/ojdbc versions) and the script, and lasts 24 hours, so changing a migration still means
+  a real Flyway reset on the next run. The reset job's summary says which path ran and how long it took.
 
 ### The one rule this creates: keep the CI seed in step
 

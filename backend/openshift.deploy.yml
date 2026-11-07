@@ -1,6 +1,12 @@
 apiVersion: template.openshift.io/v1
 kind: Template
 parameters:
+  - name: ROLLOUT_TRIGGER
+    description: Deployment run and attempt; refresh mounted runtime configuration
+    value: ""
+  - name: IMAGE_REF
+    description: Full container image reference; tested releases use a sha256 digest
+    required: true
   - name: NAME
     description: Module name
     required: true
@@ -11,19 +17,8 @@ parameters:
     description: Deployment zone, e.g. pr-### or prod
     required: true
   - name: IMAGE_TAG
-    description: Image tag to use
+    description: Version label for the running application
     required: true
-  # PR deploys pass the immutable head SHA as IMAGE_TAG, so every push changes
-  # the pod spec and forces a rollout (the mutable PR-number tag would leave
-  # `oc apply` seeing an unchanged Deployment and keep serving the stale image
-  # despite imagePullPolicy: Always). Test deploys (merge.yml) use the
-  # PR-number tag, which is unique per merge, so the spec changes there too.
-  - name: REGISTRY
-    description: Container registry to import from
-    value: ghcr.io
-  - name: ORG_NAME
-    description: Organization name
-    value: bcgov
   - name: DOMAIN
     description: OpenShift apps domain. Override when Gold is provisioned.
     value: apps.gold.devops.gov.bc.ca
@@ -41,7 +36,7 @@ parameters:
     description: Container memory limit; the JVM heap sizes itself from this cgroup limit via MaxRAMPercentage (see backend/Dockerfile). Raised for the embedded JasperReports 7 engine (Batik/OpenPDF/fonts add classpath + metaspace + native AWT footprint) per AD-16 "size the reporting path's pod CPU/Mem".
     value: "1Gi"
   - name: ILCR_DATASOURCE_ENABLED
-    description: Connect to the Oracle datasource. Set "false" for a data-less smoke deployment. Deployed pods always enforce Cognito (FAM) JWT auth — ILCR_SECURITY_ENABLED is hardcoded "true" below, not parameterized.
+    description: Connect to the Oracle datasource. Set "false" for a data-less smoke deployment. Deployed pods always enforce CSS (FAM) JWT auth — ILCR_SECURITY_ENABLED is hardcoded "true" below, not parameterized.
     value: "true"
   - name: LOG_LEVEL
     description: Application log level (debug|info|warn|error)
@@ -67,9 +62,6 @@ parameters:
   - name: ORACLEDB_PORT
     description: Oracle database TCPS port
     value: "1543"
-  - name: COGNITO_REGION
-    description: AWS region of the Cognito (FAM) user pool
-    value: ca-central-1
 objects:
   - apiVersion: apps/v1
     kind: Deployment
@@ -85,6 +77,8 @@ objects:
         type: RollingUpdate
       template:
         metadata:
+          annotations:
+            app.openshift.io/rollout-trigger: ${ROLLOUT_TRIGGER}
           labels:
             app: ${NAME}-${ZONE}
             deployment: ${NAME}-${ZONE}-${COMPONENT}
@@ -99,8 +93,8 @@ objects:
                       matchLabels:
                         deployment: ${NAME}-${ZONE}-${COMPONENT}
                     topologyKey: kubernetes.io/hostname
-          # Fetches the Oracle TCPS cert into a keystore on the api-cert PVC
-          # before the app starts. Connecting out to the Oracle host is also
+          # Fetches the Oracle TCPS cert into a keystore on the per-pod api-cert
+          # volume before the app starts. Connecting out to the Oracle host is also
           # what triggers the namespace firewall rule for database egress.
           initContainers:
             - name: ${NAME}-init
@@ -139,7 +133,7 @@ objects:
                   type: RuntimeDefault
           containers:
             - name: ${NAME}
-              image: ${REGISTRY}/${ORG_NAME}/${NAME}/${COMPONENT}:${IMAGE_TAG}
+              image: ${IMAGE_REF}
               imagePullPolicy: Always
               ports:
                 - name: http
@@ -184,18 +178,16 @@ objects:
                       key: ORACLEDB_SERVICENAME
                 - name: ORACLEDB_KEYSTORE
                   value: /cert/jssecacerts
-                - name: COGNITO_REGION
-                  value: ${COGNITO_REGION}
-                - name: COGNITO_USER_POOL
+                - name: ILCR_OIDC_ISSUER_URI
                   valueFrom:
-                    secretKeyRef:
-                      name: ${NAME}-${ZONE}-${COMPONENT}
-                      key: COGNITO_USER_POOL
-                - name: COGNITO_CLIENT_ID
+                    configMapKeyRef:
+                      name: ${NAME}-${ZONE}-backend-auth
+                      key: ILCR_OIDC_ISSUER_URI
+                - name: ILCR_OIDC_CLIENT_ID
                   valueFrom:
-                    secretKeyRef:
-                      name: ${NAME}-${ZONE}-${COMPONENT}
-                      key: COGNITO_CLIENT_ID
+                    configMapKeyRef:
+                      name: ${NAME}-${ZONE}-backend-auth
+                      key: ILCR_OIDC_CLIENT_ID
                 - name: ORACLEDB_SECRET
                   valueFrom:
                     secretKeyRef:
@@ -269,10 +261,9 @@ objects:
             - name: report-swap
               emptyDir:
                 sizeLimit: 512Mi
-            # Oracle keystore written by the init container, read by the app
+            # Per pod, as in nr-lexis: a failed fetch can't hide behind an older keystore.
             - name: api-cert
-              persistentVolumeClaim:
-                claimName: ${NAME}-${ZONE}-${COMPONENT}-api-cert
+              emptyDir: {}
             - name: init-tmp
               emptyDir: {}
   - apiVersion: v1
@@ -323,20 +314,6 @@ objects:
               value: 50
               periodSeconds: 60
           selectPolicy: Max
-  # PVC for the Oracle keystore (per-ZONE so PR previews are isolated)
-  - apiVersion: v1
-    kind: PersistentVolumeClaim
-    metadata:
-      labels:
-        app: ${NAME}-${ZONE}
-      name: ${NAME}-${ZONE}-${COMPONENT}-api-cert
-    spec:
-      accessModes:
-        - ReadWriteMany
-      resources:
-        requests:
-          storage: 50Mi
-      storageClassName: netapp-file-standard
   - apiVersion: policy/v1
     kind: PodDisruptionBudget
     metadata:

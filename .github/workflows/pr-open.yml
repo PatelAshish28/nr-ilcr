@@ -2,6 +2,7 @@ name: PR
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
 
 concurrency:
   group: ${{ github.event.number }}
@@ -29,7 +30,7 @@ jobs:
       attestations: write
       id-token: write
       packages: write
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         package: [backend, frontend, database]
@@ -51,19 +52,41 @@ jobs:
           build_args: |
             BUILDKIT_INLINE_CACHE=1
 
+  # Release-control tests run inside the PR Results gate, as in LEXIS's backend-tests job.
+  release-tests:
+    name: Release Tests
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 26
+      - name: Verify release controls
+        run: node --test .github/scripts/release-images.test.mjs
+
   deploys:
+    permissions:
+      contents: read
     name: Deploys (${{ github.event.number }})
+    if: (! github.event.pull_request.draft)
     needs: [builds, init]
     uses: ./.github/workflows/reusable-deploy.yml
     secrets: inherit
     with:
+      # PR previews deploy with the dev environment's values.
+      environment: dev
       target: ${{ needs.init.outputs.zone }}
       tag: ${{ github.event.pull_request.head.sha }}
       # database/ included so a database-only PR still deploys (deploy-database
       # reuses this list) and runs the test stage — otherwise the new image is
       # built but never rolled out or exercised, and the documented tools-DB
       # recovery (delete the deployment, re-run) silently no-ops.
-      triggers: ('backend/', 'frontend/', 'common/', 'database/', '.github/workflows/')
+      triggers: ('backend/', 'frontend/', 'common/', 'database/', '.github/workflows/', '.github/actions/', '.github/scripts/')
 
   tests:
      name: Tests
@@ -83,21 +106,11 @@ jobs:
   # ==========================================================================
   results:
     name: PR Results
-    needs: [init, builds, deploys, tests]
+    needs: [init, builds, release-tests, deploys, tests]
     if: always()
     runs-on: ubuntu-slim
     timeout-minutes: 1
     steps:
-      - name: Log Job Results Context
-        run: |
-          echo "=== Upstream Job Statuses ==="
-          echo '${{ toJson(needs) }}'
-
-      - name: Evaluate Overall Status
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
-        run: |
-          echo "❌ Critical Check Failure: At least one required job has failed or was cancelled."
-          exit 1
-
-      - name: Success Message
-        run: echo "✅ All critical checks passed or were intentionally skipped!"
+      - uses: bcgov/actions/workflow-results@091f1da89c669d36bf4899830381e5b12d2c889a # v0.11.0
+        with:
+          needs: ${{ toJson(needs) }}

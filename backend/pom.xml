@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.1.1</version>
+        <version>4.1.2</version>
         <relativePath/>
     </parent>
 
@@ -65,8 +65,8 @@
         <checkstyle.failsOnError>true</checkstyle.failsOnError>
         <checkstyle.includeTestSourceDirectory>false</checkstyle.includeTestSourceDirectory>
         <cyclonedx.skip>false</cyclonedx.skip>
-        <commons-lang3.version>3.20.0</commons-lang3.version>
-        <jasperreports.version>7.0.8</jasperreports.version>
+        <commons-lang3.version>3.21.0</commons-lang3.version>
+        <jasperreports.version>7.1.0</jasperreports.version>
         <sonar.organization>bcgov-sonarcloud</sonar.organization>
         <sonar.host.url>https://sonarcloud.io</sonar.host.url>
         <sonar.java.checkstyle.reportPaths>target/checkstyle-result.xml</sonar.java.checkstyle.reportPaths>
@@ -346,7 +346,7 @@
             <dependency>
                 <groupId>org.apache.tomcat.embed</groupId>
                 <artifactId>tomcat-embed-core</artifactId>
-                <version>11.0.26</version>
+                <version>11.0.27</version>
             </dependency>
             <dependency>
                 <groupId>org.antlr</groupId>
@@ -460,7 +460,7 @@
             <plugin>
                 <groupId>org.jacoco</groupId>
                 <artifactId>jacoco-maven-plugin</artifactId>
-                <version>0.8.15</version>
+                <version>0.8.16</version>
                 <configuration>
                     <skip>${jacoco.skip}</skip>
                     <excludes>
@@ -559,7 +559,7 @@
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
-                <version>3.10.2</version>
+                <version>3.10.4</version>
                 <configuration>
                     <java>
                         <googleJavaFormat>
@@ -587,7 +587,7 @@
                     <dependency>
                         <groupId>com.puppycrawl.tools</groupId>
                         <artifactId>checkstyle</artifactId>
-                        <version>14.1.0</version>
+                        <version>14.4.0</version>
                     </dependency>
                 </dependencies>
                 <configuration>
